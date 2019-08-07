@@ -2,6 +2,9 @@
 using Org.BouncyCastle.Crypto.Encodings;
 using Org.BouncyCastle.Crypto.Engines;
 using Org.BouncyCastle.OpenSsl;
+using PdfSharp.Drawing;
+using PdfSharp.Pdf;
+using QRCoder;
 using RestSharp;
 using System;
 using System.IO;
@@ -97,6 +100,8 @@ namespace ConsoleAppWOMGenerator {
         }
 
         static int Main(string[] args) {
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
             Console.WriteLine("Hello World!");
 
             if(args.Length != 2) {
@@ -107,6 +112,52 @@ namespace ConsoleAppWOMGenerator {
             var privKey = LoadKeyFromFile<AsymmetricCipherKeyPair>(args[0]).Private;
             var pubKey = LoadKeyFromFile<AsymmetricKeyParameter>(args[1]);
 
+            for(int i = 0; i < 200; ++i) {
+                Generate(i+1, privKey, pubKey);
+            }
+
+            return 0;
+        }
+
+        private static void Generate(int i, AsymmetricKeyParameter privKey, AsymmetricKeyParameter pubKey) {
+            (var voucherOtc, var voucherPassword) = GenerateVouchers(privKey, pubKey);
+
+            var qrGenerator = new QRCodeGenerator();
+
+            using (var outDoc = new PdfDocument()) {
+                outDoc.Info.Title = "WOM vouchers";
+
+                var outPage = outDoc.AddPage();
+                using (var gfx = XGraphics.FromPdfPage(outPage)) {
+                    var xfont = new XFont("Open Sans", 30, XFontStyle.Bold, XPdfFontOptions.UnicodeDefault);
+                    gfx.DrawString($"Vouchers {i}", xfont, XBrushes.Black,
+                        new XRect(0, 0, outPage.Width, outPage.Height * 0.1),
+                        XStringFormats.Center);
+                    gfx.DrawString(voucherPassword, xfont, XBrushes.Black,
+                        new XRect(0, outPage.Height * 0.75, outPage.Width, outPage.Height * 0.25),
+                        XStringFormats.Center);
+
+                    var payloadGenerator = new PayloadGenerator.Url(string.Format("https://wom.social/vouchers/{0:D}", voucherOtc));
+                    var qrData = qrGenerator.CreateQrCode(payloadGenerator);
+                    using (var pngData = new PngByteQRCode(qrData)) {
+                        var pngBytes = pngData.GetGraphic(20);
+                        using (var pngByteStream = new MemoryStream(pngBytes)) {
+                            using (var qrImage = XImage.FromStream(pngByteStream)) {
+                                var w = outPage.Width * 0.8;
+                                var h = outPage.Height * 0.6;
+                                var finalSize = (w <= h) ? w : h;
+
+                                gfx.DrawImage(qrImage, (outPage.Width - finalSize) / 2f, outPage.Height * 0.2, finalSize, finalSize);
+                            }
+                        }
+                    }
+
+                    outDoc.Save($"output-{i}.pdf");
+                }
+            }
+        }
+
+        private static (Guid otc, string password) GenerateVouchers(AsymmetricKeyParameter privKey, AsymmetricKeyParameter pubKey) {
             (var otc, var pwd) = CreateGeneration(privKey, pubKey);
 
             Console.WriteLine("Voucher generation: {0}", otc);
@@ -114,7 +165,7 @@ namespace ConsoleAppWOMGenerator {
 
             VerifyGeneration(otc, pubKey);
 
-            return 0;
+            return (otc, pwd);
         }
 
         private static (Guid otc, string passwrd) CreateGeneration(AsymmetricKeyParameter privKey, AsymmetricKeyParameter pubKey) {
@@ -134,7 +185,7 @@ namespace ConsoleAppWOMGenerator {
                 }
             }, pubKey);
 
-            var client = new RestClient("http://dev.wom.social");
+            var client = new RestClient("http://wom.social");
             var request = new RestRequest("/api/v1/voucher/create", Method.POST, DataFormat.Json);
             request.AddJsonBody(new VoucherCreatePayload {
                 SourceId = 2,
@@ -156,7 +207,7 @@ namespace ConsoleAppWOMGenerator {
                 Otc = otc
             }, pubKey);
 
-            var client = new RestClient("http://dev.wom.social");
+            var client = new RestClient("http://wom.social");
             var request = new RestRequest("/api/v1/voucher/verify", Method.POST, DataFormat.Json);
             request.AddJsonBody(new VoucherVerifyPayload {
                 Payload = payload
