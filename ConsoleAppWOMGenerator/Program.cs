@@ -96,7 +96,7 @@ namespace ConsoleAppWOMGenerator {
             return SimpleJson.DeserializeObject<T>(Encoding.UTF8.GetString(decryptedBytes));
         }
 
-        static async Task<int> Main(string[] args) {
+        static int Main(string[] args) {
             Console.WriteLine("Hello World!");
 
             if(args.Length != 2) {
@@ -107,6 +107,17 @@ namespace ConsoleAppWOMGenerator {
             var privKey = LoadKeyFromFile<AsymmetricCipherKeyPair>(args[0]).Private;
             var pubKey = LoadKeyFromFile<AsymmetricKeyParameter>(args[1]);
 
+            (var otc, var pwd) = CreateGeneration(privKey, pubKey);
+
+            Console.WriteLine("Voucher generation: {0}", otc);
+            Console.WriteLine("Password: {0}", pwd);
+
+            VerifyGeneration(otc, pubKey);
+
+            return 0;
+        }
+
+        private static (Guid otc, string passwrd) CreateGeneration(AsymmetricKeyParameter privKey, AsymmetricKeyParameter pubKey) {
             var nonce = Guid.NewGuid().ToString("N");
 
             var payload = Encrypt(new VoucherCreatePayload.Content {
@@ -131,13 +142,30 @@ namespace ConsoleAppWOMGenerator {
                 Payload = payload
             });
 
-            var response = await client.PostAsync<VoucherCreateResponse>(request);
-            var responsePayload = Decrypt<VoucherCreateResponse.Content>(response.Payload, privKey);
+            var response = client.Post<VoucherCreateResponse>(request);
+            if(response.StatusCode != System.Net.HttpStatusCode.OK) {
+                throw new InvalidOperationException();
+            }
+            var responsePayload = Decrypt<VoucherCreateResponse.Content>(response.Data.Payload, privKey);
 
-            Console.WriteLine("Voucher generation: {0}", responsePayload.Otc);
-            Console.WriteLine("Password: {0}", responsePayload.Password);
+            return (responsePayload.Otc, responsePayload.Password);
+        }
 
-            return 0;
+        private static void VerifyGeneration(Guid otc, AsymmetricKeyParameter pubKey) {
+            var payload = Encrypt(new VoucherVerifyPayload.Content {
+                Otc = otc
+            }, pubKey);
+
+            var client = new RestClient("http://dev.wom.social");
+            var request = new RestRequest("/api/v1/voucher/verify", Method.POST, DataFormat.Json);
+            request.AddJsonBody(new VoucherVerifyPayload {
+                Payload = payload
+            });
+
+            var response = client.Post(request);
+            if(response.StatusCode != System.Net.HttpStatusCode.OK) {
+                throw new InvalidOperationException();
+            }
         }
 
     }
